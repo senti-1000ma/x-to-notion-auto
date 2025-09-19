@@ -134,7 +134,7 @@ if submitted:
     total_rows = len(rows)
     st.write(f"총 {total_rows}행 탐색 중…")
 
-    pairs = []  # (page_id, tweet_id)
+    pairs = []
     skipped_no_url, skipped_no_id, skipped_existing = 0, 0, 0
 
     prog = st.progress(0)
@@ -144,7 +144,7 @@ if submitted:
         if not url:
             skipped_no_url += 1
         else:
-            if opt_skip_existing:
+            if not opt_overwrite:
                 v_now = read_number(row, prop_views)
                 l_now = read_number(row, prop_likes)
                 if (v_now is not None) and (l_now is not None):
@@ -214,5 +214,4 @@ if submitted:
         f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 "
         f"(URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})"
     )
-
     st.info("참고: `impression_count`(조회수)는 X API 플랜/권한에 따라 제공되지 않을 수 있습니다. 그 경우 조회수는 비워둡니다.")
