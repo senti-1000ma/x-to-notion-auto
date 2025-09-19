@@ -20,22 +20,21 @@ with st.form("config"):
     with col2:
         notion_token = st.text_input("Notion Token", value=st.secrets.get("NOTION_TOKEN", ""), type="password")
 
-    st.subheader("🧱 노션 컬럼 이름")
+    st.subheader("🧱 노션 컬럼 이름 (읽기 전용)")
     c1, c2, c3 = st.columns(3)
     with c1:
-    st.text(f"URL 컬럼: x.com Link")
-    prop_url = "x.com Link"
+        st.text("URL 컬럼: x.com Link")
+        prop_url = "x.com Link"
     with c2:
-    st.text(f"조회수 컬럼: Views on X")
-    prop_views = "Views on X"
+        st.text("조회수 컬럼: Views on X")
+        prop_views = "Views on X"
     with c3:
-    st.text(f"좋아요 컬럼: Likes")
-    prop_likes = "Likes"
-
+        st.text("좋아요 컬럼: Likes")
+        prop_likes = "Likes"
 
     st.subheader("⚙️ 옵션")
     opt_skip_existing = st.checkbox("이미 값이 있으면 건너뛰기 (조회수/좋아요 둘 다 존재 시)", value=True)
-    batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=1, step=0.1)
+    batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
 
     submitted = st.form_submit_button("🚀 실행")
 
@@ -199,7 +198,6 @@ if submitted:
             if likes is not None:
                 props_update[prop_likes] = {"number": float(likes)}
             if not props_update:
-                
                 continue
             try:
                 notion.pages.update(page_id=page_id, properties=props_update)
@@ -210,7 +208,9 @@ if submitted:
 
         time.sleep(batch_sleep)
 
-    st.success(f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 "
-               f"(URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
+    st.success(
+        f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 "
+        f"(URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})"
+    )
 
     st.info("참고: `impression_count`(조회수)는 X API 플랜/권한에 따라 제공되지 않을 수 있습니다. 그 경우 조회수는 비워둡니다.")
