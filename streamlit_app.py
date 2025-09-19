@@ -35,7 +35,7 @@ with st.form("config"):
         prop_likes = "Likes"
 
     st.subheader("⚙️ 옵션")
-    opt_skip_existing = st.checkbox("이미 값이 있으면 건너뛰기 (조회수/좋아요 둘 다 존재 시)", value=True)
+    opt_overwrite = st.checkbox("이미 값 있어도 덮어쓰기", value=True)
     batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
 
     submitted = st.form_submit_button("🚀 실행")
