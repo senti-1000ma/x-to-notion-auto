@@ -5,8 +5,8 @@ import tweepy
 import streamlit as st
 from notion_client import Client
 
-st.set_page_config(page_title="X → Notion Metrics Sync", page_icon="🐴", layout="centered")
-st.title("🐴 X → Notion Metrics Sync (by 1000ma)")
+st.set_page_config(page_title="X → Notion Sync", page_icon="🐴", layout="centered")
+st.title("🐴 X → Notion Metrics Sync .by 1000ma")
 st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣습니다. 배치는 100개씩 처리합니다.")
 
 with st.form("config"):
@@ -23,15 +23,19 @@ with st.form("config"):
     st.subheader("🧱 노션 컬럼 이름")
     c1, c2, c3 = st.columns(3)
     with c1:
-        prop_url = st.text_input("URL 컬럼", value=st.secrets.get("PROP_URL", "x.com Link"))
+    st.text(f"URL 컬럼: x.com Link")
+    prop_url = "x.com Link"
     with c2:
-        prop_views = st.text_input("조회수 컬럼", value=st.secrets.get("PROP_VIEWS", "Views on X"))
+    st.text(f"조회수 컬럼: Views on X")
+    prop_views = "Views on X"
     with c3:
-        prop_likes = st.text_input("좋아요 컬럼", value=st.secrets.get("PROP_LIKES", "Likes"))
+    st.text(f"좋아요 컬럼: Likes")
+    prop_likes = "Likes"
+
 
     st.subheader("⚙️ 옵션")
     opt_skip_existing = st.checkbox("이미 값이 있으면 건너뛰기 (조회수/좋아요 둘 다 존재 시)", value=True)
-    batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=0.5, step=0.1)
+    batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=1, step=0.1)
 
     submitted = st.form_submit_button("🚀 실행")
 
