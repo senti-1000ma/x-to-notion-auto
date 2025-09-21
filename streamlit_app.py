@@ -143,15 +143,17 @@ if submitted:
     st.write(f"총 {total_rows}행 탐색 중…")
 
     if do_renumber and serial_prop_def:
-        st.subheader("1-α) #Serial Number 리넘버링 (현재 순서 기준)")
+        st.subheader("1-α) #Serial Number 리넘버링 (현재 순서의 역순 기준)")
         rows_for_serial = rows
         serial_updated = 0
         serial_skipped = 0
         serial_failed = 0
         prog_serial = st.progress(0.0)
         serial_type = serial_prop_def.get("type")
+        total = len(rows_for_serial)
 
         for i, row in enumerate(rows_for_serial, start=1):
+            rank = total - i + 1
             page_id = row["id"]
             existing = row.get("properties", {}).get(prop_serial)
             has_value = False
@@ -163,18 +165,18 @@ if submitted:
                     has_value = bool(blocks and "".join(b.get("plain_text", "") for b in blocks).strip())
             if (not renumber_overwrite) and has_value:
                 serial_skipped += 1
-                prog_serial.progress(i / len(rows_for_serial))
+                prog_serial.progress(i / total)
                 continue
 
             if serial_type == "number":
-                new_val = {"number": float(i)}
+                new_val = {"number": float(rank)}
             elif serial_type in ("rich_text", "title"):
-                label = f"#{i}"
+                label = f"#{rank}"
                 key = serial_type
                 new_val = {key: [{"type": "text", "text": {"content": label}}]}
             else:
                 serial_skipped += 1
-                prog_serial.progress(i / len(rows_for_serial))
+                prog_serial.progress(i / total)
                 continue
 
             try:
@@ -184,7 +186,7 @@ if submitted:
                 serial_failed += 1
                 st.write(f"[ERR] Serial update {page_id[:8]}…: {e}")
 
-            prog_serial.progress(i / len(rows_for_serial))
+            prog_serial.progress(i / total)
 
         st.success(f"리넘버링 완료: 업데이트 {serial_updated}건, 스킵 {serial_skipped}건, 실패 {serial_failed}건")
 
