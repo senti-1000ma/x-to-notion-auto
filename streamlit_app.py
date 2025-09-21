@@ -7,12 +7,14 @@ from notion_client import Client
 
 st.set_page_config(page_title="X → Notion Sync", page_icon="🐴", layout="centered")
 st.title("🐴 X → Notion Sync By. 1000ma")
-st.caption("‘조회수/좋아요’ 동기화 + 원하는 정렬 기준으로 #Serial Number를 1,2,3…(또는 역순) 부여합니다.")
+st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣습니다. 배치는 100개씩 처리합니다.")
 st.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 st.sidebar.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 
 with st.form("config"):
     st.subheader("🔐 입력값")
+    st.write("※ 공개 저장소/로그에 토큰이 남지 않도록 주의하세요. (이 앱은 입력값을 서버에 저장하지 않습니다)")
+
     col1, col2 = st.columns(2)
     with col1:
         x_token = st.text_input("X Bearer Token", value=st.secrets.get("X_BEARER_TOKEN", ""), type="password")
@@ -23,23 +25,17 @@ with st.form("config"):
     st.subheader("🧱 노션 컬럼 이름 (읽기 전용)")
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.text("URL 컬럼: x.com Link"); prop_url = "x.com Link"
+        st.text("URL 컬럼: x.com Link")
+        prop_url = "x.com Link"
     with c2:
-        st.text("조회수 컬럼: Views on X"); prop_views = "Views on X"
+        st.text("조회수 컬럼: Views on X")
+        prop_views = "Views on X"
     with c3:
-        st.text("좋아요 컬럼: Likes"); prop_likes = "Likes"
+        st.text("좋아요 컬럼: Likes")
+        prop_likes = "Likes"
 
-    st.subheader("🔢 #Serial Number 설정")
-    do_renumber = st.checkbox("#Serial Number 자동 번호 매기기", value=True)
-    renumber_overwrite = st.checkbox("기존 값 있어도 덮어쓰기", value=True)
-
-    st.subheader("↕️ 번호 매김 기준(정렬)")
-    sort_prop_input = st.text_input("정렬 컬럼명(예: Date). 비우면 ‘현재 순서’ 사용", value="Date")
-    sort_dir = st.selectbox("정렬 방향", ("asc(오름차순)", "desc(내림차순)"), index=0)
-    reverse_numbering = st.checkbox("역순으로 번호 매기기 (n, n-1, …, 1)", value=True)
-
-    st.subheader("⚙️ X → Notion 동기화 옵션")
-    opt_overwrite = st.checkbox("조회수/좋아요 기존 값 있어도 덮어쓰기", value=True)
+    st.subheader("⚙️ 옵션")
+    opt_overwrite = st.checkbox("이미 값 있어도 덮어쓰기", value=True)
     batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
 
     submitted = st.form_submit_button("🚀 실행")
@@ -75,6 +71,7 @@ def chunked(iterable, size):
         yield buf
 
 def read_url_from_row(row: dict, prop_name: str) -> str | None:
+    """Notion row에서 URL 속성(우선), 없으면 rich_text에서 URL 추출"""
     props = row.get("properties", {})
     p = props.get(prop_name)
     if not p:
@@ -100,12 +97,10 @@ def read_number(row: dict, prop_name: str):
         return p.get("number")
     return None
 
-def query_database_all(notion: Client, database_id: str, sorts=None):
+def query_database_all(notion: Client, database_id: str):
     start_cursor = None
     while True:
         payload = {"database_id": database_id, "page_size": 100}
-        if sorts:
-            payload["sorts"] = sorts
         if start_cursor:
             payload["start_cursor"] = start_cursor
         resp = notion.databases.query(**payload)
@@ -128,92 +123,21 @@ if submitted:
             db = notion.databases.retrieve(database_id=db_id)
             db_title = "".join([t.get("plain_text","") for t in db.get("title", [])]) or "(제목 없음)"
             st.write(f"DB: **{db_title}**")
-            db_props = db.get("properties", {})
-            prop_serial = "#Serial Number"
-            serial_prop_def = db_props.get(prop_serial)
-            if not serial_prop_def:
-                st.warning(f"DB에 '{prop_serial}' 컬럼을 찾지 못했습니다. 컬럼을 추가한 뒤 다시 실행하세요.")
             s.update(label="✅ Notion DB 연결 OK", state="complete")
         except Exception as e:
             s.update(label="❌ Notion DB 연결 실패", state="error")
             st.exception(e)
             st.stop()
 
-    # 정렬 파라미터 구성
-    sorts = None
-    sort_prop = (sort_prop_input or "").strip()
-    if sort_prop:
-        direction = "ascending" if sort_dir.startswith("asc") else "descending"
-        # DB 속성에 존재하면 property 기준 정렬, 없으면 created_time/last_edited_time 키워드도 허용
-        if sort_prop in db_props:
-            sorts = [{"property": sort_prop, "direction": direction}]
-        elif sort_prop in ("created_time", "last_edited_time"):
-            sorts = [{"timestamp": sort_prop, "direction": direction}]
-        else:
-            st.warning(f"정렬 컬럼 '{sort_prop}' 을(를) 찾지 못해 ‘현재 순서’로 진행합니다.")
-            sorts = None
-
-    st.subheader("1) 행 수집")
-    rows = list(query_database_all(notion, db_id, sorts=sorts))
+    st.subheader("1) 트윗 링크 수집")
+    rows = list(query_database_all(notion, db_id))
     total_rows = len(rows)
     st.write(f"총 {total_rows}행 탐색 중…")
 
-    # 리넘버링: 정렬 결과 그대로 적용
-    if do_renumber and serial_prop_def:
-        st.subheader("1-α) #Serial Number 리넘버링 (선택한 정렬 순서 기준)")
-        rows_for_serial = rows
-        serial_updated = 0
-        serial_skipped = 0
-        serial_failed = 0
-        prog_serial = st.progress(0.0)
-        serial_type = serial_prop_def.get("type")
-        total = len(rows_for_serial)
-
-        for i, row in enumerate(rows_for_serial, start=1):
-            idx = (total - i + 1) if reverse_numbering else i
-            page_id = row["id"]
-
-            existing = row.get("properties", {}).get(prop_serial)
-            has_value = False
-            if existing:
-                if existing.get("type") == "number":
-                    has_value = existing.get("number") is not None
-                elif existing.get("type") in ("rich_text", "title"):
-                    blocks = existing.get(existing.get("type"), [])
-                    has_value = bool(blocks and "".join(b.get("plain_text", "") for b in blocks).strip())
-            if (not renumber_overwrite) and has_value:
-                serial_skipped += 1
-                prog_serial.progress(i / total)
-                continue
-
-            if serial_type == "number":
-                new_val = {"number": float(idx)}
-            elif serial_type in ("rich_text", "title"):
-                label = f"#{idx}"
-                key = serial_type
-                new_val = {key: [{"type": "text", "text": {"content": label}}]}
-            else:
-                serial_skipped += 1
-                prog_serial.progress(i / total)
-                continue
-
-            try:
-                notion.pages.update(page_id=page_id, properties={prop_serial: new_val})
-                serial_updated += 1
-            except Exception as e:
-                serial_failed += 1
-                st.write(f"[ERR] Serial update {page_id[:8]}…: {e}")
-
-            prog_serial.progress(i / total)
-
-        st.success(f"리넘버링 완료: 업데이트 {serial_updated}건, 스킵 {serial_skipped}건, 실패 {serial_failed}건")
-
-    # 이후 X 동기화는 기존과 동일
-    st.subheader("2) 트윗 링크 수집")
     pairs = []
     skipped_no_url, skipped_no_id, skipped_existing = 0, 0, 0
 
-    prog = st.progress(0.0)
+    prog = st.progress(0)
     for i, row in enumerate(rows, start=1):
         page_id = row["id"]
         url = read_url_from_row(row, prop_url)
@@ -227,6 +151,7 @@ if submitted:
                     skipped_existing += 1
                     prog.progress(i / total_rows)
                     continue
+
             tid = extract_tweet_id(url)
             if not tid:
                 skipped_no_id += 1
@@ -240,7 +165,7 @@ if submitted:
 
     st.success(f"수집 완료: {len(pairs)}개 (URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
 
-    st.subheader("3) 배치 조회 & 업데이트")
+    st.subheader("2) 배치 조회 & 업데이트")
     updated, failed, miss = 0, 0, 0
     log_area = st.empty()
 
@@ -289,4 +214,4 @@ if submitted:
         f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 "
         f"(URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})"
     )
-    st.info("참고: `impression_count`(조회수)는 X API 플랜/권한에 따라 제공되지 않을 수 있습니다.")
+    st.info("참고: `impression_count`(조회수)는 X API 플랜/권한에 따라 제공되지 않을 수 있습니다. 그 경우 조회수는 비워둡니다.")
