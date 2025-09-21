@@ -7,7 +7,7 @@ from notion_client import Client
 
 st.set_page_config(page_title="X → Notion Sync", page_icon="🐴", layout="centered")
 st.title("🐴 X → Notion Sync By. 1000ma")
-st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣습니다. 배치는 100개씩 처리합니다.")
+st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣고, 타이틀에 #1, #2… 시리얼 번호를 부여합니다. 배치는 100개씩 처리합니다.")
 st.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 st.sidebar.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 
@@ -34,8 +34,17 @@ with st.form("config"):
         st.text("좋아요 컬럼: Likes")
         prop_likes = "Likes"
 
-    st.subheader("⚙️ 옵션")
-    opt_overwrite = st.checkbox("이미 값 있어도 덮어쓰기", value=True)
+    st.subheader("🔢 시리얼(타이틀) 리넘버링")
+    do_renumber = st.checkbox("타이틀을 #1, #2…로 자동 리넘버링", value=True)
+    renumber_overwrite = st.checkbox("타이틀에 기존 값 있어도 덮어쓰기", value=True)
+    order_choice = st.selectbox(
+        "리넘버링 순서",
+        ("생성일 오래된→최신", "생성일 최신→오래된", "현재 정렬 유지"),
+        index=0
+    )
+
+    st.subheader("⚙️ X → Notion 동기화 옵션")
+    opt_overwrite = st.checkbox("조회수/좋아요 기존 값 있어도 덮어쓰기", value=True)
     batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
 
     submitted = st.form_submit_button("🚀 실행")
@@ -123,21 +132,80 @@ if submitted:
             db = notion.databases.retrieve(database_id=db_id)
             db_title = "".join([t.get("plain_text","") for t in db.get("title", [])]) or "(제목 없음)"
             st.write(f"DB: **{db_title}**")
+            db_props = db.get("properties", {})
+
+            title_prop_name = None
+            for k, v in db_props.items():
+                if v.get("type") == "title":
+                    title_prop_name = k
+                    break
+
+            if not title_prop_name:
+                s.update(label="❌ 타이틀 속성을 찾지 못했습니다.", state="error")
+                st.stop()
+
             s.update(label="✅ Notion DB 연결 OK", state="complete")
         except Exception as e:
             s.update(label="❌ Notion DB 연결 실패", state="error")
             st.exception(e)
             st.stop()
 
-    st.subheader("1) 트윗 링크 수집")
+    st.subheader("1) 행 수집")
     rows = list(query_database_all(notion, db_id))
     total_rows = len(rows)
     st.write(f"총 {total_rows}행 탐색 중…")
 
+    if do_renumber:
+        st.subheader("1-α) 타이틀 리넘버링 (#1, #2, …)")
+        if order_choice == "생성일 오래된→최신":
+            rows_for_serial = sorted(rows, key=lambda r: r.get("created_time", ""))
+        elif order_choice == "생성일 최신→오래된":
+            rows_for_serial = sorted(rows, key=lambda r: r.get("created_time", ""), reverse=True)
+        else:
+            rows_for_serial = rows  # 현재 순서 유지
+
+        serial_updated = 0
+        serial_skipped = 0
+        serial_failed = 0
+
+        prog_serial = st.progress(0.0)
+        for i, row in enumerate(rows_for_serial, start=1):
+            page_id = row["id"]
+
+            cur_title_blocks = row.get("properties", {}).get(title_prop_name, {}).get("title", [])
+            cur_title_text = "".join([b.get("plain_text", "") for b in cur_title_blocks]) if cur_title_blocks else ""
+            label = f"#{i}"
+
+            if (not renumber_overwrite) and cur_title_text.strip():
+                serial_skipped += 1
+                prog_serial.progress(i / len(rows_for_serial))
+                continue
+
+            try:
+                notion.pages.update(
+                    page_id=page_id,
+                    properties={
+                        title_prop_name: {
+                            "title": [
+                                { "type": "text", "text": { "content": label } }
+                            ]
+                        }
+                    }
+                )
+                serial_updated += 1
+            except Exception as e:
+                serial_failed += 1
+                st.write(f"[ERR] Serial(title) update {page_id[:8]}…: {e}")
+
+            prog_serial.progress(i / len(rows_for_serial))
+
+        st.success(f"리넘버링 완료: 업데이트 {serial_updated}건, 스킵 {serial_skipped}건, 실패 {serial_failed}건")
+
+    st.subheader("2) 트윗 링크 수집")
     pairs = []
     skipped_no_url, skipped_no_id, skipped_existing = 0, 0, 0
 
-    prog = st.progress(0)
+    prog = st.progress(0.0)
     for i, row in enumerate(rows, start=1):
         page_id = row["id"]
         url = read_url_from_row(row, prop_url)
@@ -165,7 +233,7 @@ if submitted:
 
     st.success(f"수집 완료: {len(pairs)}개 (URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
 
-    st.subheader("2) 배치 조회 & 업데이트")
+    st.subheader("3) 배치 조회 & 업데이트")
     updated, failed, miss = 0, 0, 0
     log_area = st.empty()
 
