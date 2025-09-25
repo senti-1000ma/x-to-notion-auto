@@ -3,7 +3,6 @@ import time
 import requests
 import tweepy
 import traceback
-from html import escape as html_escape
 import streamlit as st
 import streamlit.components.v1 as components
 from notion_client import Client, APIResponseError
@@ -120,17 +119,16 @@ if submitted:
         st.stop()
 
     try:
-        x_client = tweepy.Client(bearer_token=x_token, wait_on_rate_limit=True)
+        x_client = tweepy.Client(bearer_token=x_token, wait_on_rate_limit=False)
         notion = Client(auth=notion_token)
     except Exception as e:
-        st.error("초기화 실패")
+        st.error("초기화 실패 · 1000ma에게 로그를 보내주세요")
         err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         st.code(err, language="text")
-        safe = js_safe(err)
         components.html(
             f"""
             <div style="display:flex;gap:8px;justify-content:flex-start">
-              <button onclick="navigator.clipboard.writeText(`{safe}`)" style="padding:.5rem 1rem;">로그 복사</button>
+              <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
             </div>
             """,
             height=50,
@@ -148,11 +146,10 @@ if submitted:
             st.error("DB 연결 실패 · 1000ma에게 로그를 보내주세요")
             err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             st.code(err, language="text")
-            safe = js_safe(err)
             components.html(
                 f"""
                 <div style="display:flex;gap:8px;justify-content:flex-start">
-                  <button onclick="navigator.clipboard.writeText(`{safe}`)" style="padding:.5rem 1rem;">로그 복사</button>
+                  <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
                 </div>
                 """,
                 height=50,
@@ -166,11 +163,10 @@ if submitted:
         st.error("페이지 조회 실패 · 1000ma에게 로그를 보내주세요")
         err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         st.code(err, language="text")
-        safe = js_safe(err)
         components.html(
             f"""
             <div style="display:flex;gap:8px;justify-content:flex-start">
-              <button onclick="navigator.clipboard.writeText(`{safe}`)" style="padding:.5rem 1rem;">로그 복사</button>
+              <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
             </div>
             """,
             height=50,
@@ -212,31 +208,39 @@ if submitted:
     st.subheader("2) 배치 조회 & 업데이트")
     updated, failed, miss = 0, 0, 0
     log_area = st.empty()
-    err_box = st.empty()
 
     for batch_idx, batch in enumerate(chunked(pairs, 100), start=1):
         id_list = [tid for _, tid in batch]
         log_area.write(f"배치 {batch_idx}: {len(id_list)}개 조회 중…")
         try:
             resp = x_client.get_tweets(ids=id_list, tweet_fields=["public_metrics"])
+        except tweepy.TooManyRequests as e:
+            st.error("X API 사용 횟수 초과: 좌측 ‘API 사용 횟수 초과 해결 방법’ 링크를 확인하세요.")
+            try:
+                st.code(e.response.text, language="json")
+            except Exception:
+                st.code(str(e), language="text")
+            st.stop()
         except Exception as e:
-            err_text = str(e)
-            if any(k in err_text.lower() for k in ["429", "rate limit", "usage cap", "exceeded"]):
-                st.error("X API 사용 횟수 초과: 좌측 ‘API 사용 횟수 초과 해결 방법’ 링크를 확인하세요.")
-                st.code(err_text, language="text")
-                st.stop()
             st.error("예기치 못한 에러가 발생했습니다. 에러 발생 · 1000ma에게 로그를 보내주세요")
             err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             st.code(err, language="text")
-            safe = js_safe(err)
             components.html(
                 f"""
                 <div style="display:flex;gap:8px;justify-content:flex-start">
-                  <button onclick="navigator.clipboard.writeText(`{safe}`)" style="padding:.5rem 1rem;">로그 복사</button>
+                  <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
                 </div>
                 """,
                 height=50,
             )
+            st.stop()
+
+        if getattr(resp, "errors", None):
+            st.error("X API 응답에 에러가 포함되어 있습니다.")
+            st.code(str(resp.errors), language="json")
+            txt = str(resp.errors).lower()
+            if any(k in txt for k in ["usage cap", "limit", "exceeded", "rate"]):
+                st.warning("X API 사용 횟수 초과로 보입니다. 좌측 ‘API 사용 횟수 초과 해결 방법’ 링크를 확인하세요.")
             st.stop()
 
         metrics_map = {}
@@ -246,6 +250,14 @@ if submitted:
                 likes = pm.get("like_count")
                 views = pm.get("impression_count") if "impression_count" in pm else None
                 metrics_map[str(tw.id)] = (views, likes)
+
+        if not metrics_map:
+            st.warning("응답에 메트릭이 비어 있습니다. 아래 원시 응답을 확인하세요.")
+            try:
+                st.code(repr(resp.data) + "\n\nmeta=" + repr(getattr(resp, "meta", None)), language="text")
+            except Exception:
+                st.code(str(resp), language="text")
+            st.stop()
 
         for page_id, tid in batch:
             if tid not in metrics_map:
@@ -266,11 +278,10 @@ if submitted:
                 st.error("Notion 업데이트 실패 · 1000ma에게 로그를 보내주세요")
                 err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
                 st.code(err, language="text")
-                safe = js_safe(err)
                 components.html(
                     f"""
                     <div style="display:flex;gap:8px;justify-content:flex-start">
-                      <button onclick="navigator.clipboard.writeText(`{safe}`)" style="padding:.5rem 1rem;">로그 복사</button>
+                      <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
                     </div>
                     """,
                     height=50,
@@ -280,11 +291,10 @@ if submitted:
                 st.error("알 수 없는 업데이트 실패 · 1000ma에게 로그를 보내주세요")
                 err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
                 st.code(err, language="text")
-                safe = js_safe(err)
                 components.html(
                     f"""
                     <div style="display:flex;gap:8px;justify-content:flex-start">
-                      <button onclick="navigator.clipboard.writeText(`{safe}`)" style="padding:.5rem 1rem;">로그 복사</button>
+                      <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
                     </div>
                     """,
                     height=50,
