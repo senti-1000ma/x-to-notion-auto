@@ -12,9 +12,7 @@ st.title("🐴 X → Notion Sync By. 1000ma")
 st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣습니다. 배치는 100개씩 처리합니다.")
 st.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 
-HELP_URL = st.secrets.get("HELP_URL", "https://example.com/x-api-quota-help")
 st.sidebar.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
-st.sidebar.link_button("🚨 API 사용 횟수 초과 해결 방법", HELP_URL, use_container_width=True)
 
 with st.form("config"):
     st.subheader("🔐 입력값")
@@ -201,9 +199,11 @@ if submitted:
 
     if not pairs:
         st.error("처리할 트윗이 없습니다. (URL/ID 미검출 or 모두 스킵)")
-        st.stop()
+    else:
+        st.success(f"수집 완료: {len(pairs)}개 (URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
 
-    st.success(f"수집 완료: {len(pairs)}개 (URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
+    if not pairs:
+        st.stop()
 
     st.subheader("2) 배치 조회 & 업데이트")
     updated, failed, miss = 0, 0, 0
@@ -215,7 +215,7 @@ if submitted:
         try:
             resp = x_client.get_tweets(ids=id_list, tweet_fields=["public_metrics"])
         except tweepy.TooManyRequests as e:
-            st.error("X API 사용 횟수 초과: 좌측 ‘API 사용 횟수 초과 해결 방법’ 링크를 확인하세요.")
+            st.error("X API 사용 횟수 초과입니다. 쿼터가 리셋될 때까지 기다려야 합니다.")
             try:
                 st.code(e.response.text, language="json")
             except Exception:
@@ -236,11 +236,8 @@ if submitted:
             st.stop()
 
         if getattr(resp, "errors", None):
-            st.error("X API 응답에 에러가 포함되어 있습니다.")
+            st.error("X API 응답에 에러가 포함되어 있습니다. 사용 횟수 초과일 수 있으며, 쿼터 리셋을 기다려야 합니다.")
             st.code(str(resp.errors), language="json")
-            txt = str(resp.errors).lower()
-            if any(k in txt for k in ["usage cap", "limit", "exceeded", "rate"]):
-                st.warning("X API 사용 횟수 초과로 보입니다. 좌측 ‘API 사용 횟수 초과 해결 방법’ 링크를 확인하세요.")
             st.stop()
 
         metrics_map = {}
