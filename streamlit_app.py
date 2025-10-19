@@ -9,7 +9,7 @@ from notion_client import Client, APIResponseError
 
 st.set_page_config(page_title="X → Notion Sync", page_icon="🐴", layout="centered")
 st.title("🐴 X → Notion Sync By. 1000ma")
-st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣습니다. 배치는 100개씩 처리합니다.")
+st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣습니다. 배치는 5개씩 처리합니다.")
 st.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 
 st.sidebar.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
@@ -209,7 +209,7 @@ if submitted:
     updated, failed, miss = 0, 0, 0
     log_area = st.empty()
 
-    for batch_idx, batch in enumerate(chunked(pairs, 100), start=1):
+    for batch_idx, batch in enumerate(chunked(pairs, 5), start=1):
         id_list = [tid for _, tid in batch]
         log_area.write(f"배치 {batch_idx}: {len(id_list)}개 조회 중…")
         try:
