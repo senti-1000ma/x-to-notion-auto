@@ -236,9 +236,22 @@ if submitted:
             st.stop()
 
         if getattr(resp, "errors", None):
-            st.error("X API 응답에 에러가 포함되어 있습니다. 사용 횟수 초과일 수 있으며, 쿼터 리셋을 기다려야 합니다.")
-            st.code(str(resp.errors), language="json")
-            st.stop()
+            not_found_errors = [e for e in resp.errors if e.get('title') == 'Not Found Error']
+            
+            if not_found_errors:
+                error_ids = [e.get('resource_id') for e in not_found_errors if e.get('resource_id')]
+                error_id_str = ", ".join(error_ids)
+                
+                st.error(
+                    f"🚨 **트윗 찾기 실패 ({len(error_ids)}건):** 삭제되었거나 비공개 트윗이 있습니다. "
+                    f"Notion DB에서 다음 ID(들)의 링크를 확인(삭제/URL 제거) 후 다시 시도해 주세요.\n\n"
+                    f"`{error_id_str}`"
+                )
+                st.stop()
+            else:
+                st.error("X API 응답에 에러가 포함되어 있습니다. 사용 횟수 초과일 수 있으며, 쿼터 리셋을 기다려야 합니다.")
+                st.code(str(resp.errors), language="json")
+                st.stop()
 
         metrics_map = {}
         if resp and resp.data:
