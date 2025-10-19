@@ -1,4 +1,3 @@
-```python
 import re
 import time
 import requests
@@ -118,7 +117,7 @@ if submitted:
         st.stop()
 
     try:
-        x_client = tweepy.Client(bearer_token=x_token, wait_on_rate_limit=True)
+        x_client = tweepy.Client(bearer_token=x_token, wait_on_rate_limit=False)
         notion = Client(auth=notion_token)
     except Exception as e:
         st.error("초기화 실패 · 1000ma에게 로그를 보내주세요")
@@ -305,4 +304,3 @@ if submitted:
         f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 "
         f"(URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})"
     )
-```
