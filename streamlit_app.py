@@ -11,7 +11,6 @@ st.set_page_config(page_title="X → Notion Sync", page_icon="🐴", layout="cen
 st.title("🐴 X → Notion Sync By. 1000ma")
 st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣습니다. 배치는 100개씩 처리합니다.")
 st.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
-
 st.sidebar.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 
 with st.form("config"):
@@ -37,12 +36,10 @@ with st.form("config"):
     st.subheader("⚙️ 옵션")
     opt_overwrite = st.checkbox("이미 값 있어도 덮어쓰기", value=True)
     batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
+    serial_min = st.number_input("최소 시리얼(해당 값 이하 페이지는 무시)", min_value=0, value=0, step=1)
     submitted = st.form_submit_button("🚀 실행")
 
-TWEET_RE = re.compile(
-    r"https?://(?:www\.)?(?:x|twitter)\.com/(?:i/web/)?status/(\d+)"
-    r"|https?://(?:www\.)?(?:x|twitter)\.com/[\w\d\-_]+/status/(\d+)"
-)
+TWEET_RE = re.compile(r"https?://(?:www\.)?(?:x|twitter)\.com/(?:i/web/)?status/(\d+)|https?://(?:www\.)?(?:x|twitter)\.com/[\w\d\-_]+/status/(\d+)")
 
 def extract_tweet_id(url: str):
     if not url:
@@ -95,13 +92,15 @@ def read_number(row: dict, prop_name: str):
         return p.get("number")
     return None
 
-def query_database_all(notion: Client, database_id: str):
+def query_data_source_all(notion: Client, data_source_id: str, serial_min: int | float = 0):
     start_cursor = None
     while True:
-        payload = {"database_id": database_id, "page_size": 100}
+        payload = {"data_source_id": data_source_id, "page_size": 100}
+        if serial_min and serial_min > 0:
+            payload["filter"] = {"property": "#Serial Number", "number": {"greater_than": float(serial_min)}}
         if start_cursor:
             payload["start_cursor"] = start_cursor
-        resp = notion.databases.query(**payload)
+        resp = notion.data_sources.query(**payload)
         for row in resp.get("results", []):
             yield row
         if not resp.get("has_more"):
@@ -115,7 +114,6 @@ if submitted:
     if not (x_token and notion_token and db_id):
         st.error("X 토큰, Notion 토큰, DB ID를 모두 입력해 주세요.")
         st.stop()
-
     try:
         x_client = tweepy.Client(bearer_token=x_token, wait_on_rate_limit=False)
         notion = Client(auth=notion_token)
@@ -123,20 +121,16 @@ if submitted:
         st.error("초기화 실패 · 1000ma에게 로그를 보내주세요")
         err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         st.code(err, language="text")
-        components.html(
-            f"""
-            <div style="display:flex;gap:8px;justify-content:flex-start">
-              <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
-            </div>
-            """,
-            height=50,
-        )
+        components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
         st.stop()
-
     with st.status("🔎 Notion DB 확인 중...", expanded=False) as s:
         try:
             db = notion.databases.retrieve(database_id=db_id)
             db_title = "".join([t.get("plain_text","") for t in db.get("title", [])]) or "(제목 없음)"
+            ds_list = db.get("data_sources", [])
+            if not ds_list:
+                raise RuntimeError("이 데이터베이스에는 data source가 없습니다.")
+            data_source_id = ds_list[0]["id"]
             st.write(f"DB: **{db_title}**")
             s.update(label="✅ Notion DB 연결 OK", state="complete")
         except Exception as e:
@@ -144,40 +138,29 @@ if submitted:
             st.error("DB 연결 실패 · 1000ma에게 로그를 보내주세요")
             err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             st.code(err, language="text")
-            components.html(
-                f"""
-                <div style="display:flex;gap:8px;justify-content:flex-start">
-                  <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
-                </div>
-                """,
-                height=50,
-            )
+            components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
             st.stop()
-
     st.subheader("1) 트윗 링크 수집")
     try:
-        rows = list(query_database_all(notion, db_id))
+        rows = list(query_data_source_all(notion, data_source_id, serial_min=serial_min))
     except Exception as e:
         st.error("페이지 조회 실패 · 1000ma에게 로그를 보내주세요")
         err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         st.code(err, language="text")
-        components.html(
-            f"""
-            <div style="display:flex;gap:8px;justify-content:flex-start">
-              <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
-            </div>
-            """,
-            height=50,
-        )
+        components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
         st.stop()
-
     total_rows = len(rows)
     st.write(f"총 {total_rows}행 탐색 중…")
-
     pairs = []
-    skipped_no_url, skipped_no_id, skipped_existing = 0, 0, 0
+    skipped_no_url, skipped_no_id, skipped_existing, skipped_serial = 0, 0, 0, 0
     prog = st.progress(0)
+    denom = total_rows if total_rows > 0 else 1
     for i, row in enumerate(rows, start=1):
+        sn = read_number(row, "#Serial Number")
+        if sn is not None and serial_min and sn <= serial_min:
+            skipped_serial += 1
+            prog.progress(min(i / denom, 1.0))
+            continue
         page_id = row["id"]
         url = read_url_from_row(row, prop_url)
         if not url:
@@ -188,27 +171,22 @@ if submitted:
                 l_now = read_number(row, prop_likes)
                 if (v_now is not None) and (l_now is not None):
                     skipped_existing += 1
-                    prog.progress(i / total_rows)
+                    prog.progress(min(i / denom, 1.0))
                     continue
             tid = extract_tweet_id(url)
             if not tid:
                 skipped_no_id += 1
             else:
                 pairs.append((page_id, tid))
-        prog.progress(i / total_rows)
-
+        prog.progress(min(i / denom, 1.0))
     if not pairs:
         st.error("처리할 트윗이 없습니다. (URL/ID 미검출 or 모두 스킵)")
-    else:
-        st.success(f"수집 완료: {len(pairs)}개 (URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
-
-    if not pairs:
         st.stop()
-
+    else:
+        st.success(f"수집 완료: {len(pairs)}개 (시리얼 스킵 {skipped_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
     st.subheader("2) 배치 조회 & 업데이트")
     updated, failed, miss = 0, 0, 0
     log_area = st.empty()
-
     for batch_idx, batch in enumerate(chunked(pairs, 100), start=1):
         id_list = [tid for _, tid in batch]
         log_area.write(f"배치 {batch_idx}: {len(id_list)}개 조회 중…")
@@ -225,34 +203,19 @@ if submitted:
             st.error("예기치 못한 에러가 발생했습니다. 에러 발생 · 1000ma에게 로그를 보내주세요")
             err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             st.code(err, language="text")
-            components.html(
-                f"""
-                <div style="display:flex;gap:8px;justify-content:flex-start">
-                  <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
-                </div>
-                """,
-                height=50,
-            )
+            components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
             st.stop()
-
         if getattr(resp, "errors", None):
             not_found_errors = [e for e in resp.errors if e.get('title') == 'Not Found Error']
-            
             if not_found_errors:
                 error_ids = [e.get('resource_id') for e in not_found_errors if e.get('resource_id')]
                 error_id_str = ", ".join(error_ids)
-                
-                st.error(
-                    f"🚨 **트윗 찾기 실패 ({len(error_ids)}건):** 삭제되었거나 비공개 트윗이 있습니다. "
-                    f"Notion DB에서 다음 ID(들)의 링크를 확인(삭제/URL 제거) 후 다시 시도해 주세요.\n\n"
-                    f"`{error_id_str}`"
-                )
+                st.error(f"🚨 **트윗 찾기 실패 ({len(error_ids)}건):** 삭제되었거나 비공개 트윗이 있습니다. Notion DB에서 다음 ID(들)의 링크를 확인 후 다시 시도하세요.\n\n`{error_id_str}`")
                 st.stop()
             else:
-                st.error("X API 응답에 에러가 포함되어 있습니다. 사용 횟수 초과일 수 있으며, 쿼터 리셋을 기다려야 합니다.")
+                st.error("X API 응답에 에러가 포함되어 있습니다. 사용 횟수 초과일 수 있습니다.")
                 st.code(str(resp.errors), language="json")
                 st.stop()
-
         metrics_map = {}
         if resp and resp.data:
             for tw in resp.data:
@@ -260,15 +223,13 @@ if submitted:
                 likes = pm.get("like_count")
                 views = pm.get("impression_count") if "impression_count" in pm else None
                 metrics_map[str(tw.id)] = (views, likes)
-
         if not metrics_map:
-            st.warning("응답에 메트릭이 비어 있습니다. 아래 원시 응답을 확인하세요.")
+            st.warning("응답에 메트릭이 비어 있습니다.")
             try:
                 st.code(repr(resp.data) + "\n\nmeta=" + repr(getattr(resp, "meta", None)), language="text")
             except Exception:
                 st.code(str(resp), language="text")
             st.stop()
-
         for page_id, tid in batch:
             if tid not in metrics_map:
                 miss += 1
@@ -285,35 +246,18 @@ if submitted:
                 notion.pages.update(page_id=page_id, properties=props_update)
                 updated += 1
             except APIResponseError as e:
-                st.error("Notion 업데이트 실패 · 1000ma에게 로그를 보내주세요")
+                failed += 1
+                st.error("Notion 업데이트 실패")
                 err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
                 st.code(err, language="text")
-                components.html(
-                    f"""
-                    <div style="display:flex;gap:8px;justify-content:flex-start">
-                      <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
-                    </div>
-                    """,
-                    height=50,
-                )
+                components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
                 st.stop()
             except Exception as e:
-                st.error("알 수 없는 업데이트 실패 · 1000ma에게 로그를 보내주세요")
+                failed += 1
+                st.error("알 수 없는 업데이트 실패")
                 err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
                 st.code(err, language="text")
-                components.html(
-                    f"""
-                    <div style="display:flex;gap:8px;justify-content:flex-start">
-                      <button onclick="navigator.clipboard.writeText(`{js_safe(err)}`)" style="padding:.5rem 1rem;">로그 복사</button>
-                    </div>
-                    """,
-                    height=50,
-                )
+                components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
                 st.stop()
-
         time.sleep(batch_sleep)
-
-    st.success(
-        f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 "
-        f"(URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})"
-    )
+    st.success(f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 (시리얼 스킵 {skipped_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
