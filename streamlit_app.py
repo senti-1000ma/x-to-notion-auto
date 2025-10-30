@@ -204,7 +204,8 @@ def extract_number_from_property_value(p):
     t = p.get("type")
     if t == "number":
         v = p.get("number")
-        if v is None: return None
+        if v is None:
+            return None
         try:
             return int(v)
         except Exception:
@@ -321,32 +322,36 @@ if submitted:
     prog = st.progress(0)
     denom = total_rows if total_rows > 0 else 1
     for i, row in enumerate(rows, start=1):
-        sn = get_serial_value(row, serial_prop_key)
-        if sn is None:
-            skipped_no_serial += 1
-            prog.progress(min(i/denom, 1.0))
-            continue
-        if serial_min and sn <= serial_min:
-            skipped_serial += 1
-            prog.progress(min(i/denom, 1.0))
-            continue
+        if serial_prop_key:
+            sn = get_serial_value(row, serial_prop_key)
+            if sn is None:
+                if serial_min and serial_min > 0:
+                    skipped_no_serial += 1
+                    prog.progress(min(i/denom, 1.0))
+                    continue
+            else:
+                if serial_min and sn <= serial_min:
+                    skipped_serial += 1
+                    prog.progress(min(i/denom, 1.0))
+                    continue
         page_id = row["id"]
         url = read_url_from_row(row, prop_url)
         if not url:
             skipped_no_url += 1
+            prog.progress(min(i/denom, 1.0))
+            continue
+        if not opt_overwrite:
+            v_now = read_number(row, prop_views)
+            l_now = read_number(row, prop_likes)
+            if (v_now is not None) and (l_now is not None):
+                skipped_existing += 1
+                prog.progress(min(i/denom, 1.0))
+                continue
+        tid = extract_tweet_id(url)
+        if not tid:
+            skipped_no_id += 1
         else:
-            if not opt_overwrite:
-                v_now = read_number(row, prop_views)
-                l_now = read_number(row, prop_likes)
-                if (v_now is not None) and (l_now is not None):
-                    skipped_existing += 1
-                    prog.progress(min(i/denom, 1.0))
-                    continue
-            tid = extract_tweet_id(url)
-            if not tid:
-                skipped_no_id += 1
-            else:
-                pairs.append((page_id, tid))
+            pairs.append((page_id, tid))
         prog.progress(min(i/denom, 1.0))
     if not pairs:
         st.error("처리할 트윗이 없습니다. (시리얼/URL/ID 조건으로 모두 스킵)")
