@@ -36,6 +36,7 @@ with st.form("config"):
     st.subheader("⚙️ 옵션")
     opt_overwrite = st.checkbox("이미 값 있어도 덮어쓰기", value=True)
     batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
+    serial_prop_name = st.text_input("시리얼 컬럼명", value="#Serial Number")
     serial_min = st.number_input("최소 시리얼(해당 값 이하 페이지는 무시)", min_value=0, value=0, step=1)
     submitted = st.form_submit_button("🚀 실행")
 
@@ -92,12 +93,45 @@ def read_number(row: dict, prop_name: str):
         return p.get("number")
     return None
 
-def query_data_source_all(notion: Client, data_source_id: str, serial_min: int | float = 0):
+def read_title_text(row: dict, prop_name: str):
+    props = row.get("properties", {})
+    p = props.get(prop_name)
+    if not p or p.get("type") != "title":
+        return ""
+    rts = p.get("title", [])
+    out = []
+    for rt in rts:
+        if rt.get("type") == "text":
+            out.append(rt["text"].get("content", ""))
+        else:
+            t = rt.get("plain_text")
+            if t:
+                out.append(t)
+    return "".join(out)
+
+def parse_int_from_text(s: str):
+    if not s:
+        return None
+    m = re.search(r"\d+", s)
+    if not m:
+        return None
+    try:
+        return int(m.group(0))
+    except Exception:
+        return None
+
+def get_property_type(db_props: dict, name: str):
+    p = db_props.get(name)
+    if not p:
+        return None
+    return p.get("type")
+
+def query_data_source_all(notion: Client, data_source_id: str, server_filter_payload: dict | None):
     start_cursor = None
     while True:
         payload = {"data_source_id": data_source_id, "page_size": 100}
-        if serial_min and serial_min > 0:
-            payload["filter"] = {"property": "#Serial Number", "number": {"greater_than": float(serial_min)}}
+        if server_filter_payload:
+            payload["filter"] = server_filter_payload
         if start_cursor:
             payload["start_cursor"] = start_cursor
         resp = notion.data_sources.query(**payload)
@@ -131,6 +165,8 @@ if submitted:
             if not ds_list:
                 raise RuntimeError("이 데이터베이스에는 data source가 없습니다.")
             data_source_id = ds_list[0]["id"]
+            db_props = db.get("properties", {})
+            serial_prop_type = get_property_type(db_props, serial_prop_name)
             st.write(f"DB: **{db_title}**")
             s.update(label="✅ Notion DB 연결 OK", state="complete")
         except Exception as e:
@@ -140,9 +176,12 @@ if submitted:
             st.code(err, language="text")
             components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
             st.stop()
+    server_filter_payload = None
+    if serial_min and serial_min > 0 and serial_prop_type == "number":
+        server_filter_payload = {"property": serial_prop_name, "number": {"greater_than": float(serial_min)}}
     st.subheader("1) 트윗 링크 수집")
     try:
-        rows = list(query_data_source_all(notion, data_source_id, serial_min=serial_min))
+        rows = list(query_data_source_all(notion, data_source_id, server_filter_payload))
     except Exception as e:
         st.error("페이지 조회 실패 · 1000ma에게 로그를 보내주세요")
         err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
@@ -156,8 +195,15 @@ if submitted:
     prog = st.progress(0)
     denom = total_rows if total_rows > 0 else 1
     for i, row in enumerate(rows, start=1):
-        sn = read_number(row, "#Serial Number")
-        if sn is not None and serial_min and sn <= serial_min:
+        sn_val = None
+        if serial_prop_type == "number":
+            sn_val = read_number(row, serial_prop_name)
+        elif serial_prop_type == "title":
+            sn_val = parse_int_from_text(read_title_text(row, serial_prop_name))
+        elif serial_prop_type == "rich_text":
+            txt = read_url_from_row(row, serial_prop_name)
+            sn_val = parse_int_from_text(txt or "")
+        if sn_val is not None and serial_min and sn_val <= serial_min:
             skipped_serial += 1
             prog.progress(min(i / denom, 1.0))
             continue
