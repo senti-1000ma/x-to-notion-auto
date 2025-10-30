@@ -109,6 +109,22 @@ def read_title_text(row: dict, prop_name: str):
                 out.append(t)
     return "".join(out)
 
+def read_rich_text_plain(row: dict, prop_name: str):
+    props = row.get("properties", {})
+    p = props.get(prop_name)
+    if not p or p.get("type") != "rich_text":
+        return ""
+    rts = p.get("rich_text", [])
+    out = []
+    for rt in rts:
+        if rt.get("type") == "text":
+            out.append(rt["text"].get("content", ""))
+        else:
+            t = rt.get("plain_text")
+            if t:
+                out.append(t)
+    return "".join(out)
+
 def parse_int_from_text(s: str):
     if not s:
         return None
@@ -198,11 +214,15 @@ if submitted:
         sn_val = None
         if serial_prop_type == "number":
             sn_val = read_number(row, serial_prop_name)
+            if isinstance(sn_val, float):
+                try:
+                    sn_val = int(sn_val)
+                except Exception:
+                    sn_val = None
         elif serial_prop_type == "title":
             sn_val = parse_int_from_text(read_title_text(row, serial_prop_name))
         elif serial_prop_type == "rich_text":
-            txt = read_url_from_row(row, serial_prop_name)
-            sn_val = parse_int_from_text(txt or "")
+            sn_val = parse_int_from_text(read_rich_text_plain(row, serial_prop_name))
         if sn_val is not None and serial_min and sn_val <= serial_min:
             skipped_serial += 1
             prog.progress(min(i / denom, 1.0))
