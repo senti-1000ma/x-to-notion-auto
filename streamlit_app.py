@@ -43,7 +43,6 @@ with st.form("config"):
     batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
     serial_prop_name_in = st.text_input("시리얼 컬럼명", value="#Serial Number")
     serial_min = st.number_input("최소 시리얼(해당 값 이하 페이지는 무시)", min_value=0, value=0, step=1)
-    skip_when_serial_missing = st.checkbox("시리얼 값이 없으면 스킵", value=True)
     submitted = st.form_submit_button("🚀 실행")
 
 TWEET_RE = re.compile(r"https?://(?:www\.)?(?:x|twitter)\.com/(?:i/web/)?status/(\d+)|https?://(?:www\.)?(?:x|twitter)\.com/[\w\d\-_]+/status/(\d+)")
@@ -192,6 +191,65 @@ def get_property_type(db_props: dict, key: str):
         return None
     return p.get("type")
 
+def score_serial_key(name: str):
+    n = normalize_key(name)
+    score = 0
+    if "serial" in n: score += 5
+    if "number" in n or "no" in n or "num" in n: score += 3
+    if "시리얼" in name or "번호" in name or "#" in name: score += 4
+    if n.startswith("serial") or n.endswith("serial"): score += 2
+    return score
+
+def extract_number_from_property_value(p):
+    t = p.get("type")
+    if t == "number":
+        v = p.get("number")
+        if v is None: return None
+        try:
+            return int(v)
+        except Exception:
+            return None
+    if t == "title":
+        s = "".join([(rt.get("text", {}) or {}).get("content", "") if rt.get("type")=="text" else (rt.get("plain_text") or "") for rt in p.get("title", [])])
+    elif t == "rich_text":
+        s = "".join([(rt.get("text", {}) or {}).get("content", "") if rt.get("type")=="text" else (rt.get("plain_text") or "") for rt in p.get("rich_text", [])])
+    elif t == "select":
+        s = (p.get("select") or {}).get("name") or ""
+    elif t == "multi_select":
+        s = ", ".join([(x or {}).get("name","") for x in (p.get("multi_select") or [])])
+    elif t == "formula":
+        f = p.get("formula") or {}
+        if f.get("type") == "number":
+            v = f.get("number")
+            try:
+                return int(v) if v is not None else None
+            except Exception:
+                return None
+        s = f.get("string") or ""
+    else:
+        s = ""
+    m = re.search(r"\d+", s or "")
+    return int(m.group(0)) if m else None
+
+def get_serial_value(row, preferred_key: str | None):
+    props = row.get("properties", {})
+    if preferred_key and preferred_key in props:
+        v = extract_number_from_property_value(props[preferred_key])
+        if v is not None:
+            return v
+    ranked = sorted(props.items(), key=lambda kv: score_serial_key(kv[0]), reverse=True)
+    for k, p in ranked:
+        if score_serial_key(k) <= 0:
+            continue
+        v = extract_number_from_property_value(p)
+        if v is not None:
+            return v
+    for k, p in props.items():
+        v = extract_number_from_property_value(p)
+        if v is not None:
+            return v
+    return None
+
 def query_data_source_all(notion: Client, data_source_id: str, server_filter_payload: dict | None):
     start_cursor = None
     while True:
@@ -258,43 +316,19 @@ if submitted:
     total_rows = len(rows)
     st.write(f"총 {total_rows}행 탐색 중…")
     pairs = []
-    skipped_no_url, skipped_no_id, skipped_existing, skipped_serial, skipped_no_serial = 0, 0, 0, 0, 0
+    skipped_no_url = skipped_no_id = skipped_existing = 0
+    skipped_serial = skipped_no_serial = 0
     prog = st.progress(0)
     denom = total_rows if total_rows > 0 else 1
     for i, row in enumerate(rows, start=1):
-        sn_val = None
-        if serial_prop_key:
-            if serial_prop_type == "number":
-                sn_val = read_number(row, serial_prop_key)
-                if isinstance(sn_val, float):
-                    try:
-                        sn_val = int(sn_val)
-                    except Exception:
-                        sn_val = None
-            elif serial_prop_type == "title":
-                sn_val = parse_int_from_text(read_title_text(row, serial_prop_key))
-            elif serial_prop_type == "rich_text":
-                sn_val = parse_int_from_text(read_rich_text_plain(row, serial_prop_key))
-            elif serial_prop_type == "select":
-                sn_val = parse_int_from_text(read_select_name(row, serial_prop_key))
-            elif serial_prop_type == "multi_select":
-                sn_val = parse_int_from_text(read_multi_select_names(row, serial_prop_key))
-            elif serial_prop_type == "formula":
-                ftype, fval = read_formula_value(row, serial_prop_key)
-                if ftype == "number":
-                    try:
-                        sn_val = int(fval) if fval is not None else None
-                    except Exception:
-                        sn_val = None
-                elif ftype == "string":
-                    sn_val = parse_int_from_text(fval or "")
-        if sn_val is None and skip_when_serial_missing:
+        sn = get_serial_value(row, serial_prop_key)
+        if sn is None:
             skipped_no_serial += 1
-            prog.progress(min(i / denom, 1.0))
+            prog.progress(min(i/denom, 1.0))
             continue
-        if sn_val is not None and serial_min and sn_val <= serial_min:
+        if serial_min and sn <= serial_min:
             skipped_serial += 1
-            prog.progress(min(i / denom, 1.0))
+            prog.progress(min(i/denom, 1.0))
             continue
         page_id = row["id"]
         url = read_url_from_row(row, prop_url)
@@ -306,93 +340,93 @@ if submitted:
                 l_now = read_number(row, prop_likes)
                 if (v_now is not None) and (l_now is not None):
                     skipped_existing += 1
-                    prog.progress(min(i / denom, 1.0))
+                    prog.progress(min(i/denom, 1.0))
                     continue
             tid = extract_tweet_id(url)
             if not tid:
                 skipped_no_id += 1
             else:
                 pairs.append((page_id, tid))
-        prog.progress(min(i / denom, 1.0))
+        prog.progress(min(i/denom, 1.0))
     if not pairs:
         st.error("처리할 트윗이 없습니다. (시리얼/URL/ID 조건으로 모두 스킵)")
         st.stop()
     else:
         st.success(f"수집 완료: {len(pairs)}개 (시리얼 스킵 {skipped_serial}, 시리얼 없음 스킵 {skipped_no_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
-    st.subheader("2) 배치 조회 & 업데이트")
-    updated, failed, miss = 0, 0, 0
-    log_area = st.empty()
-    for batch_idx, batch in enumerate(chunked(pairs, 100), start=1):
-        id_list = [tid for _, tid in batch]
-        log_area.write(f"배치 {batch_idx}: {len(id_list)}개 조회 중…")
-        try:
-            resp = x_client.get_tweets(ids=id_list, tweet_fields=["public_metrics"])
-        except tweepy.TooManyRequests as e:
-            st.error("X API 사용 횟수 초과입니다. 쿼터가 리셋될 때까지 기다려야 합니다.")
+        st.subheader("2) 배치 조회 & 업데이트")
+        updated, failed, miss = 0, 0, 0
+        log_area = st.empty()
+        for batch_idx, batch in enumerate(chunked(pairs, 100), start=1):
+            id_list = [tid for _, tid in batch]
+            log_area.write(f"배치 {batch_idx}: {len(id_list)}개 조회 중…")
             try:
-                st.code(e.response.text, language="json")
-            except Exception:
-                st.code(str(e), language="text")
-            st.stop()
-        except Exception as e:
-            st.error("예기치 못한 에러가 발생했습니다. 에러 발생 · 1000ma에게 로그를 보내주세요")
-            err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-            st.code(err, language="text")
-            components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
-            st.stop()
-        if getattr(resp, "errors", None):
-            not_found_errors = [e for e in resp.errors if e.get('title') == 'Not Found Error']
-            if not_found_errors:
-                error_ids = [e for e in [e.get('resource_id') for e in not_found_errors] if e]
-                error_id_str = ", ".join(error_ids)
-                st.error(f"🚨 **트윗 찾기 실패 ({len(error_ids)}건):** 삭제되었거나 비공개 트윗이 있습니다. Notion DB에서 다음 ID(들)의 링크를 확인 후 다시 시도하세요.\n\n`{error_id_str}`")
-                st.stop()
-            else:
-                st.error("X API 응답에 에러가 포함되어 있습니다. 사용 횟수 초과일 수 있습니다.")
-                st.code(str(resp.errors), language="json")
-                st.stop()
-        metrics_map = {}
-        if resp and resp.data:
-            for tw in resp.data:
-                pm = getattr(tw, "public_metrics", {}) or {}
-                likes = pm.get("like_count")
-                views = pm.get("impression_count") if "impression_count" in pm else None
-                metrics_map[str(tw.id)] = (views, likes)
-        if not metrics_map:
-            st.warning("응답에 메트릭이 비어 있습니다.")
-            try:
-                st.code(repr(resp.data) + "\n\nmeta=" + repr(getattr(resp, "meta", None)), language="text")
-            except Exception:
-                st.code(str(resp), language="text")
-            st.stop()
-        for page_id, tid in batch:
-            if tid not in metrics_map:
-                miss += 1
-                continue
-            views, likes = metrics_map[tid]
-            props_update = {}
-            if views is not None:
-                props_update[prop_views] = {"number": float(views)}
-            if likes is not None:
-                props_update[prop_likes] = {"number": float(likes)}
-            if not props_update:
-                continue
-            try:
-                notion.pages.update(page_id=page_id, properties=props_update)
-                updated += 1
-            except APIResponseError as e:
-                failed += 1
-                st.error("Notion 업데이트 실패")
-                err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-                st.code(err, language="text")
-                components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
+                resp = x_client.get_tweets(ids=id_list, tweet_fields=["public_metrics"])
+            except tweepy.TooManyRequests as e:
+                st.error("X API 사용 횟수 초과입니다. 쿼터가 리셋될 때까지 기다려야 합니다.")
+                try:
+                    st.code(e.response.text, language="json")
+                except Exception:
+                    st.code(str(e), language="text")
                 st.stop()
             except Exception as e:
-                failed += 1
-                st.error("알 수 없는 업데이트 실패")
+                st.error("예기치 못한 에러가 발생했습니다. 에러 발생 · 1000ma에게 로그를 보내주세요")
                 err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
                 st.code(err, language="text")
                 components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
                 st.stop()
-        time.sleep(batch_sleep)
-    st.success(f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 (시리얼 스킵 {skipped_serial}, 시리얼 없음 스킵 {skipped_no_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
+            if getattr(resp, "errors", None):
+                not_found_errors = [e for e in resp.errors if e.get('title') == 'Not Found Error']
+                if not_found_errors:
+                    error_ids = [e for e in [e.get('resource_id') for e in not_found_errors] if e]
+                    error_id_str = ", ".join(error_ids)
+                    st.error(f"🚨 **트윗 찾기 실패 ({len(error_ids)}건):** 삭제되었거나 비공개 트윗이 있습니다. Notion DB에서 다음 ID(들)의 링크를 확인 후 다시 시도하세요.\n\n`{error_id_str}`")
+                    st.stop()
+                else:
+                    st.error("X API 응답에 에러가 포함되어 있습니다. 사용 횟수 초과일 수 있습니다.")
+                    st.code(str(resp.errors), language="json")
+                    st.stop()
+            metrics_map = {}
+            if resp and resp.data:
+                for tw in resp.data:
+                    pm = getattr(tw, "public_metrics", {}) or {}
+                    likes = pm.get("like_count")
+                    views = pm.get("impression_count") if "impression_count" in pm else None
+                    metrics_map[str(tw.id)] = (views, likes)
+            if not metrics_map:
+                st.warning("응답에 메트릭이 비어 있습니다.")
+                try:
+                    st.code(repr(resp.data) + "\n\nmeta=" + repr(getattr(resp, "meta", None)), language="text")
+                except Exception:
+                    st.code(str(resp), language="text")
+                st.stop()
+            for page_id, tid in batch:
+                if tid not in metrics_map:
+                    miss += 1
+                    continue
+                views, likes = metrics_map[tid]
+                props_update = {}
+                if views is not None:
+                    props_update[prop_views] = {"number": float(views)}
+                if likes is not None:
+                    props_update[prop_likes] = {"number": float(likes)}
+                if not props_update:
+                    continue
+                try:
+                    notion.pages.update(page_id=page_id, properties=props_update)
+                    updated += 1
+                except APIResponseError as e:
+                    failed += 1
+                    st.error("Notion 업데이트 실패")
+                    err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+                    st.code(err, language="text")
+                    components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
+                    st.stop()
+                except Exception as e:
+                    failed += 1
+                    st.error("알 수 없는 업데이트 실패")
+                    err = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+                    st.code(err, language="text")
+                    components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
+                    st.stop()
+            time.sleep(batch_sleep)
+        st.success(f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 (시리얼 스킵 {skipped_serial}, 시리얼 없음 스킵 {skipped_no_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
