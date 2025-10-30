@@ -9,48 +9,12 @@ from notion_client import Client, APIResponseError
 
 PRIMARY = "#FD688E"
 ON_PRIMARY = "#FDFDFD"
-LOGO_PATH = "Sentient.jpg"
+LOGO_PATH = "Sentient"
 
 st.set_page_config(page_title="X → Notion Sync", page_icon="🐴", layout="centered")
-st.markdown(f"""
-<style>
-.banner {{
-  width: 100%;
-  background: {PRIMARY};
-  color: {ON_PRIMARY};
-  border-radius: 16px;
-  padding: 14px 18px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 8px;
-}}
-.banner img {{
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  object-fit: cover;
-}}
-.banner-title {{
-  font-weight: 700;
-  letter-spacing: .3px;
-}}
-.section-title {{
-  color: "{PRIMARY}";
-}}
-</style>
-""", unsafe_allow_html=True)
-
 st.title("🐴 X → Notion Sync By. 1000ma")
 st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣습니다. 배치는 100개씩 처리합니다.")
-
-st.markdown(f"""
-<div class='banner'>
-  <img src='{LOGO_PATH}'/>
-  <div class='banner-title'>Sentient AGI</div>
-</div>
-""", unsafe_allow_html=True)
-
+st.image(LOGO_PATH, width=80)
 st.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 st.sidebar.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 
@@ -175,6 +139,14 @@ def read_select_name(row: dict, prop_name: str):
         return ""
     return sel.get("name") or ""
 
+def read_multi_select_names(row: dict, prop_name: str):
+    props = row.get("properties", {})
+    p = props.get(prop_name)
+    if not p or p.get("type") != "multi_select":
+        return ""
+    items = p.get("multi_select") or []
+    return ", ".join([x.get("name","") for x in items if x])
+
 def read_formula_value(row: dict, prop_name: str):
     props = row.get("properties", {})
     p = props.get(prop_name)
@@ -191,7 +163,7 @@ def read_formula_value(row: dict, prop_name: str):
 def parse_int_from_text(s: str):
     if not s:
         return None
-    m = re.search(r"\d+", s)
+    m = re.search(r"-?\d+", s)
     if not m:
         return None
     try:
@@ -206,19 +178,13 @@ def normalize_key(s: str):
 
 def find_property_key(db_props: dict, input_name: str):
     want = normalize_key(input_name)
-    exact = None
     for k in db_props.keys():
         if normalize_key(k) == want:
-            exact = k
-            break
-    if exact:
-        return exact
-    cand = None
+            return k
     for k in db_props.keys():
         if want and want in normalize_key(k):
-            cand = k
-            break
-    return cand
+            return k
+    return None
 
 def get_property_type(db_props: dict, key: str):
     p = db_props.get(key)
@@ -311,6 +277,8 @@ if submitted:
                 sn_val = parse_int_from_text(read_rich_text_plain(row, serial_prop_key))
             elif serial_prop_type == "select":
                 sn_val = parse_int_from_text(read_select_name(row, serial_prop_key))
+            elif serial_prop_type == "multi_select":
+                sn_val = parse_int_from_text(read_multi_select_names(row, serial_prop_key))
             elif serial_prop_type == "formula":
                 ftype, fval = read_formula_value(row, serial_prop_key)
                 if ftype == "number":
