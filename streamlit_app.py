@@ -7,9 +7,49 @@ import streamlit as st
 import streamlit.components.v1 as components
 from notion_client import Client, APIResponseError
 
+PRIMARY = "#FD688E"
+ON_PRIMARY = "#FDFDFD"
+LOGO_PATH = "Sentient.jpg"
+
 st.set_page_config(page_title="X → Notion Sync", page_icon="🐴", layout="centered")
+st.markdown(f"""
+<style>
+.banner {{
+  width: 100%;
+  background: {PRIMARY};
+  color: {ON_PRIMARY};
+  border-radius: 16px;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}}
+.banner img {{
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+}}
+.banner-title {{
+  font-weight: 700;
+  letter-spacing: .3px;
+}}
+.section-title {{
+  color: "{PRIMARY}";
+}}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🐴 X → Notion Sync By. 1000ma")
 st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣습니다. 배치는 100개씩 처리합니다.")
+
+banner_cols = st.columns([1, 12])
+with banner_cols[0]:
+    st.image(LOGO_PATH, use_column_width=True)
+with banner_cols[1]:
+    components.html(f"<div class='banner'><img src='{LOGO_PATH}'/><div class='banner-title'>Sentient AGI</div></div>", height=62)
+
 st.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 st.sidebar.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 
@@ -36,8 +76,9 @@ with st.form("config"):
     st.subheader("⚙️ 옵션")
     opt_overwrite = st.checkbox("이미 값 있어도 덮어쓰기", value=True)
     batch_sleep = st.number_input("배치 사이 대기(초)", min_value=0.0, max_value=5.0, value=1.0, step=0.1)
-    serial_prop_name = st.text_input("시리얼 컬럼명", value="#Serial Number")
+    serial_prop_name_in = st.text_input("시리얼 컬럼명", value="#Serial Number")
     serial_min = st.number_input("최소 시리얼(해당 값 이하 페이지는 무시)", min_value=0, value=0, step=1)
+    skip_when_serial_missing = st.checkbox("시리얼 값이 없으면 스킵", value=True)
     submitted = st.form_submit_button("🚀 실행")
 
 TWEET_RE = re.compile(r"https?://(?:www\.)?(?:x|twitter)\.com/(?:i/web/)?status/(\d+)|https?://(?:www\.)?(?:x|twitter)\.com/[\w\d\-_]+/status/(\d+)")
@@ -98,9 +139,8 @@ def read_title_text(row: dict, prop_name: str):
     p = props.get(prop_name)
     if not p or p.get("type") != "title":
         return ""
-    rts = p.get("title", [])
     out = []
-    for rt in rts:
+    for rt in p.get("title", []):
         if rt.get("type") == "text":
             out.append(rt["text"].get("content", ""))
         else:
@@ -114,9 +154,8 @@ def read_rich_text_plain(row: dict, prop_name: str):
     p = props.get(prop_name)
     if not p or p.get("type") != "rich_text":
         return ""
-    rts = p.get("rich_text", [])
     out = []
-    for rt in rts:
+    for rt in p.get("rich_text", []):
         if rt.get("type") == "text":
             out.append(rt["text"].get("content", ""))
         else:
@@ -124,6 +163,29 @@ def read_rich_text_plain(row: dict, prop_name: str):
             if t:
                 out.append(t)
     return "".join(out)
+
+def read_select_name(row: dict, prop_name: str):
+    props = row.get("properties", {})
+    p = props.get(prop_name)
+    if not p or p.get("type") != "select":
+        return ""
+    sel = p.get("select")
+    if not sel:
+        return ""
+    return sel.get("name") or ""
+
+def read_formula_value(row: dict, prop_name: str):
+    props = row.get("properties", {})
+    p = props.get(prop_name)
+    if not p or p.get("type") != "formula":
+        return None, None
+    f = p.get("formula") or {}
+    t = f.get("type")
+    if t == "number":
+        return "number", f.get("number")
+    if t == "string":
+        return "string", f.get("string")
+    return t, None
 
 def parse_int_from_text(s: str):
     if not s:
@@ -136,8 +198,29 @@ def parse_int_from_text(s: str):
     except Exception:
         return None
 
-def get_property_type(db_props: dict, name: str):
-    p = db_props.get(name)
+def normalize_key(s: str):
+    if s is None:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", s.strip().lower())
+
+def find_property_key(db_props: dict, input_name: str):
+    want = normalize_key(input_name)
+    exact = None
+    for k in db_props.keys():
+        if normalize_key(k) == want:
+            exact = k
+            break
+    if exact:
+        return exact
+    cand = None
+    for k in db_props.keys():
+        if want and want in normalize_key(k):
+            cand = k
+            break
+    return cand
+
+def get_property_type(db_props: dict, key: str):
+    p = db_props.get(key)
     if not p:
         return None
     return p.get("type")
@@ -182,7 +265,8 @@ if submitted:
                 raise RuntimeError("이 데이터베이스에는 data source가 없습니다.")
             data_source_id = ds_list[0]["id"]
             db_props = db.get("properties", {})
-            serial_prop_type = get_property_type(db_props, serial_prop_name)
+            serial_prop_key = find_property_key(db_props, serial_prop_name_in)
+            serial_prop_type = get_property_type(db_props, serial_prop_key) if serial_prop_key else None
             st.write(f"DB: **{db_title}**")
             s.update(label="✅ Notion DB 연결 OK", state="complete")
         except Exception as e:
@@ -193,8 +277,8 @@ if submitted:
             components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
             st.stop()
     server_filter_payload = None
-    if serial_min and serial_min > 0 and serial_prop_type == "number":
-        server_filter_payload = {"property": serial_prop_name, "number": {"greater_than": float(serial_min)}}
+    if serial_min and serial_min > 0 and serial_prop_key and serial_prop_type == "number":
+        server_filter_payload = {"property": serial_prop_key, "number": {"greater_than": float(serial_min)}}
     st.subheader("1) 트윗 링크 수집")
     try:
         rows = list(query_data_source_all(notion, data_source_id, server_filter_payload))
@@ -207,22 +291,38 @@ if submitted:
     total_rows = len(rows)
     st.write(f"총 {total_rows}행 탐색 중…")
     pairs = []
-    skipped_no_url, skipped_no_id, skipped_existing, skipped_serial = 0, 0, 0, 0
+    skipped_no_url, skipped_no_id, skipped_existing, skipped_serial, skipped_no_serial = 0, 0, 0, 0, 0
     prog = st.progress(0)
     denom = total_rows if total_rows > 0 else 1
     for i, row in enumerate(rows, start=1):
         sn_val = None
-        if serial_prop_type == "number":
-            sn_val = read_number(row, serial_prop_name)
-            if isinstance(sn_val, float):
-                try:
-                    sn_val = int(sn_val)
-                except Exception:
-                    sn_val = None
-        elif serial_prop_type == "title":
-            sn_val = parse_int_from_text(read_title_text(row, serial_prop_name))
-        elif serial_prop_type == "rich_text":
-            sn_val = parse_int_from_text(read_rich_text_plain(row, serial_prop_name))
+        if serial_prop_key:
+            if serial_prop_type == "number":
+                sn_val = read_number(row, serial_prop_key)
+                if isinstance(sn_val, float):
+                    try:
+                        sn_val = int(sn_val)
+                    except Exception:
+                        sn_val = None
+            elif serial_prop_type == "title":
+                sn_val = parse_int_from_text(read_title_text(row, serial_prop_key))
+            elif serial_prop_type == "rich_text":
+                sn_val = parse_int_from_text(read_rich_text_plain(row, serial_prop_key))
+            elif serial_prop_type == "select":
+                sn_val = parse_int_from_text(read_select_name(row, serial_prop_key))
+            elif serial_prop_type == "formula":
+                ftype, fval = read_formula_value(row, serial_prop_key)
+                if ftype == "number":
+                    try:
+                        sn_val = int(fval) if fval is not None else None
+                    except Exception:
+                        sn_val = None
+                elif ftype == "string":
+                    sn_val = parse_int_from_text(fval or "")
+        if sn_val is None and skip_when_serial_missing:
+            skipped_no_serial += 1
+            prog.progress(min(i / denom, 1.0))
+            continue
         if sn_val is not None and serial_min and sn_val <= serial_min:
             skipped_serial += 1
             prog.progress(min(i / denom, 1.0))
@@ -246,10 +346,10 @@ if submitted:
                 pairs.append((page_id, tid))
         prog.progress(min(i / denom, 1.0))
     if not pairs:
-        st.error("처리할 트윗이 없습니다. (URL/ID 미검출 or 모두 스킵)")
+        st.error("처리할 트윗이 없습니다. (시리얼/URL/ID 조건으로 모두 스킵)")
         st.stop()
     else:
-        st.success(f"수집 완료: {len(pairs)}개 (시리얼 스킵 {skipped_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
+        st.success(f"수집 완료: {len(pairs)}개 (시리얼 스킵 {skipped_serial}, 시리얼 없음 스킵 {skipped_no_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
     st.subheader("2) 배치 조회 & 업데이트")
     updated, failed, miss = 0, 0, 0
     log_area = st.empty()
@@ -274,7 +374,7 @@ if submitted:
         if getattr(resp, "errors", None):
             not_found_errors = [e for e in resp.errors if e.get('title') == 'Not Found Error']
             if not_found_errors:
-                error_ids = [e.get('resource_id') for e in not_found_errors if e.get('resource_id')]
+                error_ids = [e for e in [e.get('resource_id') for e in not_found_errors] if e]
                 error_id_str = ", ".join(error_ids)
                 st.error(f"🚨 **트윗 찾기 실패 ({len(error_ids)}건):** 삭제되었거나 비공개 트윗이 있습니다. Notion DB에서 다음 ID(들)의 링크를 확인 후 다시 시도하세요.\n\n`{error_id_str}`")
                 st.stop()
@@ -326,4 +426,4 @@ if submitted:
                 components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
                 st.stop()
         time.sleep(batch_sleep)
-    st.success(f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 (시리얼 스킵 {skipped_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
+    st.success(f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 (시리얼 스킵 {skipped_serial}, 시리얼 없음 스킵 {skipped_no_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
