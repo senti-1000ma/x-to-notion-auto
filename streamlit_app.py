@@ -9,7 +9,7 @@ from notion_client import Client, APIResponseError
 
 PRIMARY = "#FD688E"
 ON_PRIMARY = "#FDFDFD"
-LOGO_PATH = "Sentient"
+LOGO_PATH = "Sentient.jpg"
 
 st.set_page_config(page_title="X → Notion Sync", page_icon="🐴", layout="centered")
 st.title("🐴 X → Notion Sync By. 1000ma")
