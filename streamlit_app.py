@@ -44,7 +44,12 @@ st.markdown(f"""
 st.title("🐴 X → Notion Sync By. 1000ma")
 st.caption("각자 본인 키와 DB ID만 입력하면 ‘조회수/좋아요’를 노션 DB에 채워 넣습니다. 배치는 100개씩 처리합니다.")
 
-components.html(f"<div class='banner'><img src='{LOGO_PATH}'/><div class='banner-title'>Sentient AGI</div></div>", height=62)
+st.markdown(f"""
+<div class='banner'>
+  <img src='{LOGO_PATH}'/>
+  <div class='banner-title'>Sentient AGI</div>
+</div>
+""", unsafe_allow_html=True)
 
 st.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
 st.sidebar.link_button("🩵 1000ma 팔로우로 응원하기", "https://x.com/o000oo0o0o00", use_container_width=True)
