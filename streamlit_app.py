@@ -495,7 +495,7 @@ if submitted:
 
     for i, row in enumerate(rows, start=1):
     # 시리얼 스킵 로직 (serial_prop_key 유무와 무관하게 항상 수행)
-    sn = get_serial_value(row, serial_prop_key)
+        sn = get_serial_value(row, serial_prop_key)
         if serial_min and serial_min > 0:
         if sn is None:
             skipped_no_serial += 1
