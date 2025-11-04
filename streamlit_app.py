@@ -494,19 +494,17 @@ if submitted:
     denom = total_rows if total_rows > 0 else 1
 
     for i, row in enumerate(rows, start=1):
-        # 시리얼 스킵 로직
-        if serial_prop_key:
-            sn = get_serial_value(row, serial_prop_key)
-            if sn is None:
-                if serial_min and serial_min > 0:
-                    skipped_no_serial += 1
-                    prog.progress(min(i/denom, 1.0))
-                    continue
-            else:
-                if serial_min and sn <= serial_min:
-                    skipped_serial += 1
-                    prog.progress(min(i/denom, 1.0))
-                    continue
+    # 시리얼 스킵 로직 (serial_prop_key 유무와 무관하게 항상 수행)
+    sn = get_serial_value(row, serial_prop_key)
+    if serial_min and serial_min > 0:
+        if sn is None:
+            skipped_no_serial += 1
+            prog.progress(min(i/denom, 1.0))
+            continue
+        elif sn <= serial_min:
+            skipped_serial += 1
+            prog.progress(min(i/denom, 1.0))
+            continue
 
         page_id = row["id"]
         url = read_url_from_row(row, prop_url)
