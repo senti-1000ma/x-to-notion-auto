@@ -45,7 +45,9 @@ with st.form("config"):
     serial_min = st.number_input("최소 시리얼(해당 값 이하 페이지는 무시)", min_value=0, value=0, step=1)
     submitted = st.form_submit_button("🚀 실행")
 
-TWEET_RE = re.compile(r"https?://(?:www\.)?(?:x|twitter)\.com/(?:i/web/)?status/(\d+)|https?://(?:www\.)?(?:x|twitter)\.com/[\w\d\-_]+/status/(\d+)")
+TWEET_RE = re.compile(
+    r"https?://(?:www\.)?(?:x|twitter)\.com/(?:i/web/)?status/(\d+)|https?://(?:www\.)?(?:x|twitter)\.com/[\w\d\-_]+/status/(\d+)"
+)
 
 def extract_tweet_id(url: str):
     if not url:
@@ -200,16 +202,29 @@ def score_serial_key(name: str):
     if n.startswith("serial") or n.endswith("serial"): score += 2
     return score
 
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+# 핵심 수정: Unique ID / Rollup 지원
 def extract_number_from_property_value(p):
     t = p.get("type")
-    if t == "number":
-        v = p.get("number")
-        if v is None:
-            return None
+
+    # Unique ID (#65처럼 보이지만 실제 숫자는 unique_id.number에 존재)
+    if t == "unique_id":
+        uid = p.get("unique_id") or {}
+        n = uid.get("number")
         try:
-            return int(v)
+            return int(n) if n is not None else None
         except Exception:
             return None
+
+    # Number 그대로
+    if t == "number":
+        v = p.get("number")
+        try:
+            return int(v) if v is not None else None
+        except Exception:
+            return None
+
+    # Title / Rich text / Select / Multi-select / Formula(문자/숫자)
     if t == "title":
         s = "".join([(rt.get("text", {}) or {}).get("content", "") if rt.get("type")=="text" else (rt.get("plain_text") or "") for rt in p.get("title", [])])
     elif t == "rich_text":
@@ -227,10 +242,44 @@ def extract_number_from_property_value(p):
             except Exception:
                 return None
         s = f.get("string") or ""
+    elif t == "rollup":
+        r = p.get("rollup") or {}
+        rt = r.get("type")
+        if rt == "number":
+            v = r.get("number")
+            try:
+                return int(v) if v is not None else None
+            except Exception:
+                return None
+        if rt == "array":
+            # array에 들어온 하위 값들에서 숫자 또는 텍스트 추출
+            texts = []
+            for it in r.get("array", []):
+                it_t = it.get("type")
+                if it_t == "number":
+                    v = it.get("number")
+                    try:
+                        return int(v) if v is not None else None
+                    except Exception:
+                        continue
+                elif it_t == "rich_text":
+                    for rr in it.get("rich_text", []):
+                        texts.append(rr.get("plain_text") or (rr.get("text", {}) or {}).get("content", ""))
+                elif it_t == "title":
+                    for rr in it.get("title", []):
+                        texts.append(rr.get("plain_text") or (rr.get("text", {}) or {}).get("content", ""))
+                elif it_t == "select":
+                    sel = it.get("select") or {}
+                    texts.append(sel.get("name",""))
+            s = " ".join(texts)
+        else:
+            s = ""
     else:
         s = ""
+
     m = re.search(r"\d+", s or "")
     return int(m.group(0)) if m else None
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 def get_serial_value(row, preferred_key: str | None):
     props = row.get("properties", {})
@@ -282,6 +331,7 @@ if submitted:
         st.code(err, language="text")
         components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
         st.stop()
+
     with st.status("🔎 Notion DB 확인 중...", expanded=False) as s:
         try:
             db = notion.databases.retrieve(database_id=db_id)
@@ -302,9 +352,18 @@ if submitted:
             st.code(err, language="text")
             components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
             st.stop()
+
+    # ---------------------------
+    # 핵심 수정: 서버 필터 Unique ID 지원 (가능한 워크스페이스에서만 동작)
     server_filter_payload = None
-    if serial_min and serial_min > 0 and serial_prop_key and serial_prop_type == "number":
-        server_filter_payload = {"property": serial_prop_key, "number": {"greater_than": float(serial_min)}}
+    if serial_min and serial_min > 0 and serial_prop_key:
+        if serial_prop_type == "number":
+            server_filter_payload = {"property": serial_prop_key, "number": {"greater_than": float(serial_min)}}
+        elif serial_prop_type == "unique_id":
+            # 일부 워크스페이스/버전에서 지원
+            server_filter_payload = {"property": serial_prop_key, "unique_id": {"greater_than": float(serial_min)}}
+    # ---------------------------
+
     st.subheader("1) 트윗 링크 수집")
     try:
         rows = list(query_data_source_all(notion, data_source_id, server_filter_payload))
@@ -314,14 +373,18 @@ if submitted:
         st.code(err, language="text")
         components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
         st.stop()
+
     total_rows = len(rows)
     st.write(f"총 {total_rows}행 탐색 중…")
+
     pairs = []
     skipped_no_url = skipped_no_id = skipped_existing = 0
     skipped_serial = skipped_no_serial = 0
-    prog = st.progress(0)
+    prog = st.progress(0.0)
     denom = total_rows if total_rows > 0 else 1
+
     for i, row in enumerate(rows, start=1):
+        # 시리얼 스킵 로직
         if serial_prop_key:
             sn = get_serial_value(row, serial_prop_key)
             if sn is None:
@@ -334,12 +397,14 @@ if submitted:
                     skipped_serial += 1
                     prog.progress(min(i/denom, 1.0))
                     continue
+
         page_id = row["id"]
         url = read_url_from_row(row, prop_url)
         if not url:
             skipped_no_url += 1
             prog.progress(min(i/denom, 1.0))
             continue
+
         if not opt_overwrite:
             v_now = read_number(row, prop_views)
             l_now = read_number(row, prop_likes)
@@ -347,20 +412,26 @@ if submitted:
                 skipped_existing += 1
                 prog.progress(min(i/denom, 1.0))
                 continue
+
         tid = extract_tweet_id(url)
         if not tid:
             skipped_no_id += 1
         else:
             pairs.append((page_id, tid))
+
         prog.progress(min(i/denom, 1.0))
+
     if not pairs:
         st.error("처리할 트윗이 없습니다. (시리얼/URL/ID 조건으로 모두 스킵)")
         st.stop()
     else:
-        st.success(f"수집 완료: {len(pairs)}개 (시리얼 스킵 {skipped_serial}, 시리얼 없음 스킵 {skipped_no_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
+        st.success(
+            f"수집 완료: {len(pairs)}개 (시리얼 스킵 {skipped_serial}, 시리얼 없음 스킵 {skipped_no_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})"
+        )
         st.subheader("2) 배치 조회 & 업데이트")
         updated, failed, miss = 0, 0, 0
         log_area = st.empty()
+
         for batch_idx, batch in enumerate(chunked(pairs, 100), start=1):
             id_list = [tid for _, tid in batch]
             log_area.write(f"배치 {batch_idx}: {len(id_list)}개 조회 중…")
@@ -379,24 +450,30 @@ if submitted:
                 st.code(err, language="text")
                 components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
                 st.stop()
+
             if getattr(resp, "errors", None):
                 not_found_errors = [e for e in resp.errors if e.get('title') == 'Not Found Error']
                 if not_found_errors:
                     error_ids = [e for e in [e.get('resource_id') for e in not_found_errors] if e]
                     error_id_str = ", ".join(error_ids)
-                    st.error(f"🚨 **트윗 찾기 실패 ({len(error_ids)}건):** 삭제되었거나 비공개 트윗이 있습니다. Notion DB에서 다음 ID(들)의 링크를 확인 후 다시 시도하세요.\n\n`{error_id_str}`")
+                    st.error(
+                        f"🚨 **트윗 찾기 실패 ({len(error_ids)}건):** 삭제되었거나 비공개 트윗이 있습니다. Notion DB에서 다음 ID(들)의 링크를 확인 후 다시 시도하세요.\n\n`{error_id_str}`"
+                    )
                     st.stop()
                 else:
                     st.error("X API 응답에 에러가 포함되어 있습니다. 사용 횟수 초과일 수 있습니다.")
                     st.code(str(resp.errors), language="json")
                     st.stop()
+
             metrics_map = {}
             if resp and resp.data:
                 for tw in resp.data:
                     pm = getattr(tw, "public_metrics", {}) or {}
                     likes = pm.get("like_count")
+                    # impression_count는 Elevated 이상/엔드포인트 권한 필요할 수 있음
                     views = pm.get("impression_count") if "impression_count" in pm else None
                     metrics_map[str(tw.id)] = (views, likes)
+
             if not metrics_map:
                 st.warning("응답에 메트릭이 비어 있습니다.")
                 try:
@@ -404,6 +481,7 @@ if submitted:
                 except Exception:
                     st.code(str(resp), language="text")
                 st.stop()
+
             for page_id, tid in batch:
                 if tid not in metrics_map:
                     miss += 1
@@ -433,5 +511,10 @@ if submitted:
                     st.code(err, language="text")
                     components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
                     st.stop()
+
             time.sleep(batch_sleep)
-        st.success(f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 (시리얼 스킵 {skipped_serial}, 시리얼 없음 스킵 {skipped_no_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})")
+
+        st.success(
+            f"✅ 완료: 업데이트 {updated}건, 실패 {failed}건, 응답 누락 {miss}건 "
+            f"(시리얼 스킵 {skipped_serial}, 시리얼 없음 스킵 {skipped_no_serial}, URL 없음 {skipped_no_url}, ID 실패 {skipped_no_id}, 기존값 스킵 {skipped_existing})"
+        )
