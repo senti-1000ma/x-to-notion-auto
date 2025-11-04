@@ -202,8 +202,10 @@ def score_serial_key(name: str):
     if n.startswith("serial") or n.endswith("serial"): score += 2
     return score
 
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-# 핵심 수정: Unique ID / Rollup 지원
+# ---------------------------
+# 핵심 보강: 시리얼 숫자 추출기(Unique ID / Rollup / 텍스트 내 숫자)
+NUM_PAT = re.compile(r"(?:#\s*)?(\d{1,8})\b")  # #65, 65, No.65 등 대응
+
 def extract_number_from_property_value(p):
     t = p.get("type")
 
@@ -279,7 +281,96 @@ def extract_number_from_property_value(p):
 
     m = re.search(r"\d+", s or "")
     return int(m.group(0)) if m else None
-# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+def stringify_property_value(p):
+    t = p.get("type")
+    if t == "title":
+        return "".join(
+            (rt.get("plain_text") or (rt.get("text", {}) or {}).get("content", ""))
+            for rt in p.get("title", [])
+        )
+    if t == "rich_text":
+        return "".join(
+            (rt.get("plain_text") or (rt.get("text", {}) or {}).get("content", ""))
+            for rt in p.get("rich_text", [])
+        )
+    if t == "select":
+        return (p.get("select") or {}).get("name", "") or ""
+    if t == "multi_select":
+        return ", ".join((x or {}).get("name", "") for x in (p.get("multi_select") or []))
+    if t == "people":
+        return ", ".join((pp.get("name") or "") for pp in (p.get("people") or []))
+    if t == "checkbox":
+        return "true" if p.get("checkbox") else "false"
+    if t == "url":
+        return p.get("url") or ""
+    if t == "email":
+        return p.get("email") or ""
+    if t == "phone_number":
+        return p.get("phone_number") or ""
+    if t == "formula":
+        f = p.get("formula") or {}
+        if f.get("type") == "string":
+            return f.get("string") or ""
+        if f.get("type") == "number":
+            return str(f.get("number") if f.get("number") is not None else "")
+        if f.get("type") == "boolean":
+            return "true" if f.get("boolean") else "false"
+        return ""
+    if t == "rollup":
+        r = p.get("rollup") or {}
+        rt = r.get("type")
+        if rt == "number":
+            return str(r.get("number") if r.get("number") is not None else "")
+        if rt == "array":
+            parts = []
+            for it in r.get("array", []):
+                parts.append(stringify_property_value(it))
+            return " ".join(parts)
+        if rt == "date":
+            dd = r.get("date") or {}
+            return dd.get("start") or ""
+        return ""
+    if t == "date":
+        dd = p.get("date") or {}
+        return dd.get("start") or ""
+    if t == "unique_id":
+        uid = p.get("unique_id") or {}
+        n = uid.get("number")
+        if n is not None:
+            return f"#{int(n)}"
+        return uid.get("prefix") or ""
+    if t == "number":
+        v = p.get("number")
+        return str(int(v)) if v is not None else ""
+    return ""
+
+def extract_number_fallback_from_props(props: dict):
+    # 1) unique_id가 있으면 우선 사용
+    for k, p in props.items():
+        if p.get("type") == "unique_id":
+            uid = p.get("unique_id") or {}
+            n = uid.get("number")
+            if n is not None:
+                try:
+                    return int(n)
+                except Exception:
+                    pass
+    # 2) 모든 프로퍼티를 문자열화 후 숫자 패턴 스캔
+    bag = []
+    for k, p in props.items():
+        s = stringify_property_value(p) or ""
+        if s:
+            bag.append(s)
+    big = " | ".join(bag)
+    m = NUM_PAT.search(big)
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+    return None
+# ---------------------------
 
 def get_serial_value(row, preferred_key: str | None):
     props = row.get("properties", {})
@@ -298,7 +389,8 @@ def get_serial_value(row, preferred_key: str | None):
         v = extract_number_from_property_value(p)
         if v is not None:
             return v
-    return None
+    # 최후의 수단: 전 프로퍼티 텍스트에서 숫자 스캔
+    return extract_number_fallback_from_props(props)
 
 def query_data_source_all(notion: Client, data_source_id: str, server_filter_payload: dict | None):
     start_cursor = None
@@ -353,16 +445,14 @@ if submitted:
             components.html(f"<div style='display:flex;gap:8px;justify-content:flex-start'><button onclick=\"navigator.clipboard.writeText(`{js_safe(err)}`)\" style='padding:.5rem 1rem;'>로그 복사</button></div>", height=50)
             st.stop()
 
-    # ---------------------------
-    # 핵심 수정: 서버 필터 Unique ID 지원 (가능한 워크스페이스에서만 동작)
+    # 서버 필터: number/unique_id 에 대해 greater_than 시도
     server_filter_payload = None
     if serial_min and serial_min > 0 and serial_prop_key:
         if serial_prop_type == "number":
             server_filter_payload = {"property": serial_prop_key, "number": {"greater_than": float(serial_min)}}
         elif serial_prop_type == "unique_id":
-            # 일부 워크스페이스/버전에서 지원
+            # 일부 워크스페이스/버전에서만 지원될 수 있음. 미지원이어도 아래 클라이언트 스킵 로직으로 충분.
             server_filter_payload = {"property": serial_prop_key, "unique_id": {"greater_than": float(serial_min)}}
-    # ---------------------------
 
     st.subheader("1) 트윗 링크 수집")
     try:
@@ -376,6 +466,26 @@ if submitted:
 
     total_rows = len(rows)
     st.write(f"총 {total_rows}행 탐색 중…")
+
+    # 🔍 디버그 미리보기: 상위 50행 시리얼 판정 로그
+    with st.expander("🔍 시리얼 추출 디버그 (상위 50행 미리보기)"):
+        preview_rows = rows[:50]
+        lines = []
+        lines.append(f"serial_prop_key={serial_prop_key!r}, serial_prop_type={serial_prop_type!r}, serial_min={serial_min}")
+        for j, row in enumerate(preview_rows, start=1):
+            pid = row.get("id", "")[:8]
+            sn = get_serial_value(row, serial_prop_key)
+            if serial_min and serial_min > 0:
+                if sn is None:
+                    reason = "→ SKIP (시리얼 없음)"
+                elif sn <= serial_min:
+                    reason = f"→ SKIP (sn={sn} ≤ {serial_min})"
+                else:
+                    reason = f"→ KEEP (sn={sn} > {serial_min})"
+            else:
+                reason = f"→ KEEP (serial_min=0)"
+            lines.append(f"{j:02d}. page={pid}  sn={sn}  {reason}")
+        st.code("\n".join(lines), language="text")
 
     pairs = []
     skipped_no_url = skipped_no_id = skipped_existing = 0
